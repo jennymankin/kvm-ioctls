@@ -11,6 +11,7 @@
 
 extern crate kvm_bindings;
 extern crate libc;
+extern crate vmm_vcpu;
 
 #[macro_use]
 mod sys_ioctl;

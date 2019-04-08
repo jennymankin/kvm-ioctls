@@ -2,12 +2,16 @@ use kvm_bindings::*;
 use libc::EINVAL;
 use std::fs::File;
 use std::io;
+use std::result;
 use std::os::unix::io::{AsRawFd, RawFd};
 
-use ioctls::{CpuId, KvmRunWrapper, Result};
+use ioctls::{KvmRunWrapper, Result};
 use kvm_ioctls::*;
 use sys_ioctl::*;
 
+use vmm_vcpu::vcpu::{Vcpu, VcpuExit, CpuId, Error as VcpuError};
+
+/*
 /// Reasons for vcpu exits. The exit reasons are mapped to the `KVM_EXIT_*` defines
 /// from `include/uapi/linux/kvm.h`.
 #[derive(Debug)]
@@ -77,11 +81,304 @@ pub enum VcpuExit<'a> {
     /// Corresponds to KVM_EXIT_HYPERV.
     Hyperv,
 }
+*/
 
 /// A wrapper around creating and using a kvm related VCPU fd
 pub struct VcpuFd {
     vcpu: File,
     kvm_run_ptr: KvmRunWrapper,
+}
+
+impl Vcpu for VcpuFd {
+
+    type RunContextType = kvm_bindings::kvm_run;
+
+    /// Gets the VCPU registers using the `KVM_GET_REGS` ioctl.
+    ///
+    #[cfg(not(any(target_arch = "arm", target_arch = "aarch64")))]
+    fn get_regs(&self) -> Result<kvm_regs> {
+        // Safe because we know that our file is a VCPU fd, we know the kernel will only read the
+        // correct amount of memory from our pointer, and we verify the return result.
+        let mut regs = unsafe { std::mem::zeroed() };
+        let ret = unsafe { ioctl_with_mut_ref(self, KVM_GET_REGS(), &mut regs) };
+        if ret != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(regs)
+    }
+
+    /// Sets the VCPU registers using `KVM_SET_REGS` ioctl.
+    ///
+    /// # Arguments
+    ///
+    /// * `regs` - Registers being set.
+    ///
+    #[cfg(not(any(target_arch = "arm", target_arch = "aarch64")))]
+    fn set_regs(&self, regs: &kvm_regs) -> Result<()> {
+        // Safe because we know that our file is a VCPU fd, we know the kernel will only read the
+        // correct amount of memory from our pointer, and we verify the return result.
+        let ret = unsafe { ioctl_with_ref(self, KVM_SET_REGS(), regs) };
+        if ret != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// Gets the VCPU special registers using `KVM_GET_SREGS` ioctl.
+    ///
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    fn get_sregs(&self) -> Result<kvm_sregs> {
+        // Safe because we know that our file is a VCPU fd, we know the kernel will only write the
+        // correct amount of memory to our pointer, and we verify the return result.
+        let mut regs = kvm_sregs::default();
+
+        let ret = unsafe { ioctl_with_mut_ref(self, KVM_GET_SREGS(), &mut regs) };
+        if ret != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(regs)
+    }
+
+    /// X86 specific call to read model-specific registers for this VCPU.
+    ///
+    /// It emulates `KVM_GET_MSRS` ioctl's behavior by returning the number of MSRs
+    /// successfully read upon success or the last error number in case of failure.
+    ///
+    /// # Arguments
+    ///
+    /// * `msrs`  - MSRs to be read.
+    ///
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    pub fn get_msrs(&self, msrs: &mut kvm_msrs) -> Result<(i32)> {
+        let ret = unsafe {
+            // Here we trust the kernel not to read past the end of the kvm_msrs struct.
+            ioctl_with_mut_ref(self, KVM_GET_MSRS(), msrs)
+        };
+        if ret < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(ret)
+    }
+
+    /// X86 specific call to setup the MSRS.
+    ///
+    /// See the documentation for `KVM_SET_MSRS`.
+    ///
+    /// # Arguments
+    ///
+    /// * `kvm_msrs` - MSRs to be written.
+    ///
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    fn set_msrs(&self, msrs: &kvm_msrs) -> Result<()> {
+        let ret = unsafe {
+            // Here we trust the kernel not to read past the end of the kvm_msrs struct.
+            ioctl_with_ref(self, KVM_SET_MSRS(), msrs)
+        };
+        if ret < 0 {
+            // KVM_SET_MSRS actually returns the number of msr entries written.
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    fn get_run_context(&self) -> kvm_run {
+        *self.kvm_run_ptr.as_mut_ref()
+    }
+
+    /// Triggers the running of the current virtual CPU returning an exit reason.
+    ///
+    fn run(&self) -> Result<VcpuExit> {
+        // Safe because we know that our file is a VCPU fd and we verify the return result.
+        let ret = unsafe { ioctl(self, KVM_RUN()) };
+        if ret == 0 {
+            let run = self.kvm_run_ptr.as_mut_ref();
+            match run.exit_reason {
+                // make sure you treat all possible exit reasons from include/uapi/linux/kvm.h corresponding
+                // when upgrading to a different kernel version
+                KVM_EXIT_UNKNOWN => Ok(VcpuExit::Unknown),
+                KVM_EXIT_EXCEPTION => Ok(VcpuExit::Exception),
+                KVM_EXIT_IO => {
+                    let run_start = run as *mut kvm_run as *mut u8;
+                    // Safe because the exit_reason (which comes from the kernel) told us which
+                    // union field to use.
+                    let io = unsafe { run.__bindgen_anon_1.io };
+                    let port = io.port;
+                    let data_size = io.count as usize * io.size as usize;
+                    // The data_offset is defined by the kernel to be some number of bytes into the
+                    // kvm_run stucture, which we have fully mmap'd.
+                    let data_ptr = unsafe { run_start.offset(io.data_offset as isize) };
+                    // The slice's lifetime is limited to the lifetime of this Vcpu, which is equal
+                    // to the mmap of the kvm_run struct that this is slicing from
+                    let data_slice = unsafe {
+                        std::slice::from_raw_parts_mut::<u8>(data_ptr as *mut u8, data_size)
+                    };
+                    match u32::from(io.direction) {
+                        KVM_EXIT_IO_IN => Ok(VcpuExit::IoIn(port, data_slice)),
+                        KVM_EXIT_IO_OUT => Ok(VcpuExit::IoOut(port, data_slice)),
+                        _ => Err(io::Error::from_raw_os_error(EINVAL)),
+                    }
+                }
+                KVM_EXIT_HYPERCALL => Ok(VcpuExit::Hypercall),
+                KVM_EXIT_DEBUG => Ok(VcpuExit::Debug),
+                KVM_EXIT_HLT => Ok(VcpuExit::Hlt),
+                KVM_EXIT_MMIO => {
+                    // Safe because the exit_reason (which comes from the kernel) told us which
+                    // union field to use.
+                    let mmio = unsafe { &mut run.__bindgen_anon_1.mmio };
+                    let addr = mmio.phys_addr;
+                    let len = mmio.len as usize;
+                    let data_slice = &mut mmio.data[..len];
+                    if mmio.is_write != 0 {
+                        Ok(VcpuExit::MmioWrite(addr, data_slice))
+                    } else {
+                        Ok(VcpuExit::MmioRead(addr, data_slice))
+                    }
+                }
+                KVM_EXIT_IRQ_WINDOW_OPEN => Ok(VcpuExit::IrqWindowOpen),
+                KVM_EXIT_SHUTDOWN => Ok(VcpuExit::Shutdown),
+                KVM_EXIT_FAIL_ENTRY => Ok(VcpuExit::FailEntry),
+                KVM_EXIT_INTR => Ok(VcpuExit::Intr),
+                KVM_EXIT_SET_TPR => Ok(VcpuExit::SetTpr),
+                KVM_EXIT_TPR_ACCESS => Ok(VcpuExit::TprAccess),
+                KVM_EXIT_S390_SIEIC => Ok(VcpuExit::S390Sieic),
+                KVM_EXIT_S390_RESET => Ok(VcpuExit::S390Reset),
+                KVM_EXIT_DCR => Ok(VcpuExit::Dcr),
+                KVM_EXIT_NMI => Ok(VcpuExit::Nmi),
+                KVM_EXIT_INTERNAL_ERROR => Ok(VcpuExit::InternalError),
+                KVM_EXIT_OSI => Ok(VcpuExit::Osi),
+                KVM_EXIT_PAPR_HCALL => Ok(VcpuExit::PaprHcall),
+                KVM_EXIT_S390_UCONTROL => Ok(VcpuExit::S390Ucontrol),
+                KVM_EXIT_WATCHDOG => Ok(VcpuExit::Watchdog),
+                KVM_EXIT_S390_TSCH => Ok(VcpuExit::S390Tsch),
+                KVM_EXIT_EPR => Ok(VcpuExit::Epr),
+                KVM_EXIT_SYSTEM_EVENT => Ok(VcpuExit::SystemEvent),
+                KVM_EXIT_S390_STSI => Ok(VcpuExit::S390Stsi),
+                KVM_EXIT_IOAPIC_EOI => Ok(VcpuExit::IoapicEoi),
+                KVM_EXIT_HYPERV => Ok(VcpuExit::Hyperv),
+                r => panic!("unknown kvm exit reason: {}", r),
+            }
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
+    /// Sets the VCPU special registers using `KVM_SET_SREGS` ioctl.
+    ///
+    /// # Arguments
+    ///
+    /// * `sregs` - Special registers to be set.
+    ///
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    fn set_sregs(&self, sregs: &kvm_sregs) -> Result<()> {
+        // Safe because we know that our file is a VCPU fd, we know the kernel will only read the
+        // correct amount of memory from our pointer, and we verify the return result.
+        let ret = unsafe { ioctl_with_ref(self, KVM_SET_SREGS(), sregs) };
+        if ret != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// X86 specific call to setup the FPU.
+    ///
+    /// See the documentation for `KVM_SET_FPU`.
+    ///
+    /// # Arguments
+    ///
+    /// * `fpu` - FPU configurations struct.
+    ///
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    fn set_fpu(&self, fpu: &kvm_fpu) -> Result<()> {
+        let ret = unsafe {
+            // Here we trust the kernel not to read past the end of the kvm_fpu struct.
+            ioctl_with_ref(self, KVM_SET_FPU(), fpu)
+        };
+        if ret < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// X86 specific call to setup the CPUID registers.
+    ///
+    /// See the documentation for `KVM_SET_CPUID2`.
+    ///
+    /// # Arguments
+    ///
+    /// * `cpuid` - CPUID registers.
+    ///
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    fn set_cpuid2(&self, cpuid: &CpuId) -> Result<()> {
+        let ret = unsafe {
+            // Here we trust the kernel not to read past the end of the kvm_msrs struct.
+            ioctl_with_ptr(self, KVM_SET_CPUID2(), cpuid.as_ptr())
+        };
+        if ret < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// X86 specific call that gets the FPU-related structure.
+    ///
+    /// See the documentation for `KVM_GET_FPU`.
+    ///
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    fn get_fpu(&self) -> Result<kvm_fpu> {
+        let mut fpu = kvm_fpu::default();
+
+        let ret = unsafe {
+            // Here we trust the kernel not to read past the end of the kvm_fpu struct.
+            ioctl_with_mut_ref(self, KVM_GET_FPU(), &mut fpu)
+        };
+        if ret != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(fpu)
+    }
+
+
+    /// X86 specific call to get the state of the LAPIC (Local Advanced Programmable Interrupt
+    /// Controller).
+    ///
+    /// See the documentation for `KVM_GET_LAPIC`.
+    ///
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    fn get_lapic(&self) -> Result<kvm_lapic_state> {
+        let mut klapic = kvm_lapic_state::default();
+
+        let ret = unsafe {
+            // The ioctl is unsafe unless you trust the kernel not to write past the end of the
+            // local_apic struct.
+            ioctl_with_mut_ref(self, KVM_GET_LAPIC(), &mut klapic)
+        };
+        if ret < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(klapic)
+    }
+
+    /// X86 specific call to set the state of the LAPIC (Local Advanced Programmable Interrupt
+    /// Controller).
+    ///
+    /// See the documentation for `KVM_SET_LAPIC`.
+    ///
+    /// # Arguments
+    ///
+    /// * `klapic` - LAPIC state registers.
+    ///
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    fn set_lapic(&self, klapic: &kvm_lapic_state) -> Result<()> {
+        let ret = unsafe {
+            // The ioctl is safe because the kernel will only read from the klapic struct.
+            ioctl_with_ref(self, KVM_SET_LAPIC(), klapic)
+        };
+        if ret < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
 }
 
 impl VcpuFd {
@@ -148,24 +445,6 @@ impl VcpuFd {
         Ok(())
     }
 
-    /// X86 specific call that gets the FPU-related structure.
-    ///
-    /// See the documentation for `KVM_GET_FPU`.
-    ///
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    pub fn get_fpu(&self) -> Result<kvm_fpu> {
-        let mut fpu = kvm_fpu::default();
-
-        let ret = unsafe {
-            // Here we trust the kernel not to read past the end of the kvm_fpu struct.
-            ioctl_with_mut_ref(self, KVM_GET_FPU(), &mut fpu)
-        };
-        if ret != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(fpu)
-    }
-
     /// X86 specific call to setup the FPU.
     ///
     /// See the documentation for `KVM_SET_FPU`.
@@ -179,26 +458,6 @@ impl VcpuFd {
         let ret = unsafe {
             // Here we trust the kernel not to read past the end of the kvm_fpu struct.
             ioctl_with_ref(self, KVM_SET_FPU(), fpu)
-        };
-        if ret < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
-    }
-
-    /// X86 specific call to setup the CPUID registers.
-    ///
-    /// See the documentation for `KVM_SET_CPUID2`.
-    ///
-    /// # Arguments
-    ///
-    /// * `cpuid` - CPUID registers.
-    ///
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    pub fn set_cpuid2(&self, cpuid: &CpuId) -> Result<()> {
-        let ret = unsafe {
-            // Here we trust the kernel not to read past the end of the kvm_msrs struct.
-            ioctl_with_ptr(self, KVM_SET_CPUID2(), cpuid.as_ptr())
         };
         if ret < 0 {
             return Err(io::Error::last_os_error());
@@ -245,27 +504,6 @@ impl VcpuFd {
             return Err(io::Error::last_os_error());
         }
         Ok(())
-    }
-
-    /// X86 specific call to read model-specific registers for this VCPU.
-    ///
-    /// It emulates `KVM_GET_MSRS` ioctl's behavior by returning the number of MSRs
-    /// successfully read upon success or the last error number in case of failure.
-    ///
-    /// # Arguments
-    ///
-    /// * `msrs`  - MSRs to be read.
-    ///
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    pub fn get_msrs(&self, msrs: &mut kvm_msrs) -> Result<(i32)> {
-        let ret = unsafe {
-            // Here we trust the kernel not to read past the end of the kvm_msrs struct.
-            ioctl_with_mut_ref(self, KVM_GET_MSRS(), msrs)
-        };
-        if ret < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(ret)
     }
 
     /// X86 specific call to setup the MSRS.
@@ -391,6 +629,7 @@ mod tests {
     use Cap;
     use MAX_KVM_CPUID_ENTRIES;
 
+    use libc::eventfd;
     use std::os::unix::io::FromRawFd;
     use std::ptr::null_mut;
 

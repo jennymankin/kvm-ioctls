@@ -12,5 +12,7 @@ license = "Apache-2.0"
 libc = ">=0.2.39"
 kvm-bindings = ">=0.1.0"
 
+vmm-vcpu = { path = "../vmm-vcpu" }
+
 [dev-dependencies]
 byteorder = ">=1.2.1"
