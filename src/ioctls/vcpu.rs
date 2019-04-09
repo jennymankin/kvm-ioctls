@@ -10,12 +10,91 @@ use libc::EINVAL;
 use std::fs::File;
 use std::io;
 use std::os::unix::io::{AsRawFd, RawFd};
+use std::result;
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-use ioctls::CpuId;
 use ioctls::{KvmRunWrapper, Result};
 use kvm_ioctls::*;
 use sys_ioctl::*;
+
+use vmm_vcpu::vcpu::{Vcpu, VcpuExit};
+use vmm_vcpu::x86_64::{CpuId};
+
+/*
+/// Reasons for vCPU exits.
+///
+/// The exit reasons are mapped to the `KVM_EXIT_*` defines in the
+/// [Linux KVM header](https://elixir.bootlin.com/linux/latest/source/include/uapi/linux/kvm.h).
+///
+#[derive(Debug)]
+pub enum VcpuExit<'a> {
+    /// An out port instruction was run on the given port with the given data.
+    IoOut(u16 /* port */, &'a [u8] /* data */),
+    /// An in port instruction was run on the given port.
+    ///
+    /// The given slice should be filled in before [run()](struct.VcpuFd.html#method.run)
+    /// is called again.
+    IoIn(u16 /* port */, &'a mut [u8] /* data */),
+    /// A read instruction was run against the given MMIO address.
+    ///
+    /// The given slice should be filled in before [run()](struct.VcpuFd.html#method.run)
+    /// is called again.
+    MmioRead(u64 /* address */, &'a mut [u8]),
+    /// A write instruction was run against the given MMIO address with the given data.
+    MmioWrite(u64 /* address */, &'a [u8]),
+    /// Corresponds to KVM_EXIT_UNKNOWN.
+    Unknown,
+    /// Corresponds to KVM_EXIT_EXCEPTION.
+    Exception,
+    /// Corresponds to KVM_EXIT_HYPERCALL.
+    Hypercall,
+    /// Corresponds to KVM_EXIT_DEBUG.
+    Debug,
+    /// Corresponds to KVM_EXIT_HLT.
+    Hlt,
+    /// Corresponds to KVM_EXIT_IRQ_WINDOW_OPEN.
+    IrqWindowOpen,
+    /// Corresponds to KVM_EXIT_SHUTDOWN.
+    Shutdown,
+    /// Corresponds to KVM_EXIT_FAIL_ENTRY.
+    FailEntry,
+    /// Corresponds to KVM_EXIT_INTR.
+    Intr,
+    /// Corresponds to KVM_EXIT_SET_TPR.
+    SetTpr,
+    /// Corresponds to KVM_EXIT_TPR_ACCESS.
+    TprAccess,
+    /// Corresponds to KVM_EXIT_S390_SIEIC.
+    S390Sieic,
+    /// Corresponds to KVM_EXIT_S390_RESET.
+    S390Reset,
+    /// Corresponds to KVM_EXIT_DCR.
+    Dcr,
+    /// Corresponds to KVM_EXIT_NMI.
+    Nmi,
+    /// Corresponds to KVM_EXIT_INTERNAL_ERROR.
+    InternalError,
+    /// Corresponds to KVM_EXIT_OSI.
+    Osi,
+    /// Corresponds to KVM_EXIT_PAPR_HCALL.
+    PaprHcall,
+    /// Corresponds to KVM_EXIT_S390_UCONTROL.
+    S390Ucontrol,
+    /// Corresponds to KVM_EXIT_WATCHDOG.
+    Watchdog,
+    /// Corresponds to KVM_EXIT_S390_TSCH.
+    S390Tsch,
+    /// Corresponds to KVM_EXIT_EPR.
+    Epr,
+    /// Corresponds to KVM_EXIT_SYSTEM_EVENT.
+    SystemEvent,
+    /// Corresponds to KVM_EXIT_S390_STSI.
+    S390Stsi,
+    /// Corresponds to KVM_EXIT_IOAPIC_EOI.
+    IoapicEoi,
+    /// Corresponds to KVM_EXIT_HYPERV.
+    Hyperv,
+}
+*/
 
 /// A wrapper around creating and using a kvm related vCPU file descriptor.
 pub struct VcpuFd {
@@ -280,7 +359,7 @@ impl Vcpu for VcpuFd {
 
     /// Triggers the running of the current virtual CPU returning an exit reason.
     ///
-    fn run(&self) -> Result<VcpuExit> {
+    fn run(& self) -> Result<VcpuExit> {
         // Safe because we know that our file is a vCPU fd and we verify the return result.
         let ret = unsafe { ioctl(self, KVM_RUN()) };
         if ret == 0 {
@@ -641,6 +720,9 @@ mod tests {
                         .map(|page| page.count_ones())
                         .fold(0, |dirty_page_count, i| dirty_page_count + i);
                     assert_eq!(dirty_pages, 2);
+
+                    let run_context: kvm_run = vcpu_fd.get_run_context();
+                    assert_eq!(run_context.exit_reason, KVM_EXIT_HLT);
                     break;
                 }
                 r => panic!("unexpected exit reason: {:?}", r),

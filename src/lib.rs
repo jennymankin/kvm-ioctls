@@ -23,10 +23,10 @@ mod ioctls;
 pub use cap::Cap;
 pub use ioctls::device::DeviceFd;
 pub use ioctls::system::Kvm;
-pub use ioctls::vcpu::{VcpuExit, VcpuFd};
+pub use ioctls::vcpu::{VcpuFd};
 pub use ioctls::vm::VmFd;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub use ioctls::CpuId;
+pub use vmm_vcpu::x86_64::CpuId;
 // The following example is used to verify that our public
 // structures are exported properly.
 /// # Example
