@@ -1,10 +1,22 @@
-use kvm_bindings::{kvm_cpuid2, kvm_cpuid_entry2, kvm_run};
+// Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
+//
+// Portions Copyright 2017 The Chromium OS Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the THIRD-PARTY file.
+
 use std::io;
 use std::mem::size_of;
 use std::os::unix::io::AsRawFd;
 use std::ptr::null_mut;
 use std::result;
 
+use kvm_bindings::kvm_run;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+use kvm_bindings::{kvm_cpuid2, kvm_cpuid_entry2};
+
+/// Wrappers over KVM device ioctls.
+pub mod device;
 /// Wrappers over KVM system ioctls.
 pub mod system;
 /// Wrappers over KVM VCPU ioctls.
@@ -12,7 +24,10 @@ pub mod vcpu;
 /// Wrappers over KVM Virtual Machine ioctls.
 pub mod vm;
 
-/// Wrapper over possible Kvm Result.
+/// A specialized `Result` type for KVM ioctls.
+///
+/// This typedef is generally used to avoid writing out io::Error directly and
+/// is otherwise a direct mapping to Result.
 pub type Result<T> = result::Result<T, io::Error>;
 
 // Returns a `Vec<T>` with a size in bytes at least as large as `size_in_bytes`.
@@ -101,6 +116,13 @@ impl CpuId {
     ///
     /// * `array_len` - Maximum number of CPUID entries.
     ///
+    /// # Example
+    ///
+    /// ```
+    /// #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    /// use kvm_ioctls::CpuId;
+    /// let cpu_id = CpuId::new(32);
+    /// ```
     pub fn new(array_len: usize) -> CpuId {
         let mut kvm_cpuid = vec_with_array_field::<kvm_cpuid2, kvm_cpuid_entry2>(array_len);
         kvm_cpuid[0].nent = array_len as u32;

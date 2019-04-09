@@ -21,10 +21,25 @@ mod cap;
 mod ioctls;
 
 pub use cap::Cap;
+pub use ioctls::device::DeviceFd;
 pub use ioctls::system::Kvm;
-pub use ioctls::vcpu::VcpuFd;
+pub use ioctls::vcpu::{VcpuExit, VcpuFd};
 pub use ioctls::vm::VmFd;
-pub use ioctls::{CpuId, KvmRunWrapper, Result};
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+pub use ioctls::CpuId;
+// The following example is used to verify that our public
+// structures are exported properly.
+/// # Example
+///
+/// ```
+/// #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+/// use kvm_ioctls::{KvmRunWrapper, Result};
+/// ```
+pub use ioctls::{KvmRunWrapper, Result};
 
-/// Taken from Linux Kernel v4.14.13 (arch/x86/include/asm/kvm_host.h)
+/// Maximum number of CPUID entries that can be returned by a call to KVM ioctls.
+///
+/// This value is taken from Linux Kernel v4.14.13 (arch/x86/include/asm/kvm_host.h).
+/// It can be used for calls to [get_supported_cpuid](struct.Kvm.html#method.get_supported_cpuid) and
+/// [get_emulated_cpuid](struct.Kvm.html#method.get_emulated_cpuid).
 pub const MAX_KVM_CPUID_ENTRIES: usize = 80;
