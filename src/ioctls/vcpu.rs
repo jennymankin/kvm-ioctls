@@ -199,7 +199,7 @@ impl Vcpu for VcpuFd {
     /// * `msrs`  - MSRs to be read.
     ///
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    pub fn get_msrs(&self, msrs: &mut kvm_msrs) -> Result<(i32)> {
+    fn get_msrs(&self, msrs: &mut kvm_msrs) -> Result<(i32)> {
         let ret = unsafe {
             // Here we trust the kernel not to read past the end of the kvm_msrs struct.
             ioctl_with_mut_ref(self, KVM_GET_MSRS(), msrs)
@@ -231,6 +231,53 @@ impl Vcpu for VcpuFd {
         Ok(())
     }
 
+    
+    /// Sets the type of CPU to be exposed to the guest and optional features.
+    ///
+    /// This initializes an ARM vCPU to the specified type with the specified features
+    /// and resets the values of all of its registers to defaults.
+    ///
+    /// # Arguments
+    ///
+    /// * `kvi` - information about preferred CPU target type and recommended features for it.
+    ///
+    #[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
+    fn vcpu_init(&self, kvi: &kvm_vcpu_init) -> Result<()> {
+        // This is safe because we allocated the struct and we know the kernel will read
+        // exactly the size of the struct.
+        let ret = unsafe { ioctl_with_ref(self, KVM_ARM_VCPU_INIT(), kvi) };
+        if ret < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// Sets the value of one register for this vCPU.
+    ///
+    /// The id of the register is encoded as specified in the kernel documentation
+    /// for `KVM_SET_ONE_REG`.
+    ///
+    /// # Arguments
+    ///
+    /// * `reg_id` - ID of the register for which we are setting the value.
+    /// * `data` - value for the specified register.
+    ///
+    #[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
+    fn set_one_reg(&self, reg_id: u64, data: u64) -> Result<()> {
+        let data_ref = &data as *const u64;
+        let onereg = kvm_one_reg {
+            id: reg_id,
+            addr: data_ref as u64,
+        };
+        // This is safe because we allocated the struct and we know the kernel will read
+        // exactly the size of the struct.
+        let ret = unsafe { ioctl_with_ref(self, KVM_SET_ONE_REG(), &onereg) };
+        if ret < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
     /// Triggers the running of the current virtual CPU returning an exit reason.
     ///
     fn run(&self) -> Result<VcpuExit> {
@@ -253,8 +300,8 @@ impl Vcpu for VcpuFd {
                     // The data_offset is defined by the kernel to be some number of bytes into the
                     // kvm_run stucture, which we have fully mmap'd.
                     let data_ptr = unsafe { run_start.offset(io.data_offset as isize) };
-                    // The slice's lifetime is limited to the lifetime of this Vcpu, which is equal
-                    // to the mmap of the kvm_run struct that this is slicing from
+                    // The slice's lifetime is limited to the lifetime of this vCPU, which is equal
+                    // to the mmap of the kvm_run struct that this is slicing from.
                     let data_slice = unsafe {
                         std::slice::from_raw_parts_mut::<u8>(data_ptr as *mut u8, data_size)
                     };
