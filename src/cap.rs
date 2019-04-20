@@ -1,5 +1,5 @@
 // Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //
 // Portions Copyright 2017 The Chromium OS Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
@@ -7,9 +7,13 @@
 
 use kvm_bindings::*;
 
-/// Enumeration of the extension capability list that KVM exposes.
+/// Capabilities exposed by KVM.
 ///
-/// For details check the
+/// The capabilities list can be used in conjunction with
+/// [Kvm::check_extension()](struct.Kvm.html#method.check_extension) to check if a particular
+/// capability is available.
+///
+/// The list of capabilities is based on the the KVM_CAP_* defines from the
 /// [Linux KVM header](https://elixir.bootlin.com/linux/latest/source/include/uapi/linux/kvm.h).
 ///
 #[derive(Clone, Copy, Debug)]

@@ -1,5 +1,5 @@
 // Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //
 // Portions Copyright 2017 The Chromium OS Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
@@ -62,11 +62,12 @@ fn vec_with_array_field<T: Default, F>(count: usize) -> Vec<T> {
     vec_with_size_in_bytes(vec_size_bytes)
 }
 
-/// Wrapper for `kvm_cpuid2` which has a zero length array at the end.
-/// Hides the zero length array behind a bounds check.
+/// Wrapper over the `kvm_cpuid2` structure.
+///
+/// The structure has a zero length array at the end, hidden behind bounds check.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub struct CpuId {
-    /// Wrapper over `kvm_cpuid2` from which we only use the first element.
+    // Wrapper over `kvm_cpuid2` from which we only use the first element.
     kvm_cpuid: Vec<kvm_cpuid2>,
     // Number of `kvm_cpuid_entry2` structs at the end of kvm_cpuid2.
     allocated_len: usize,
@@ -111,7 +112,7 @@ impl PartialEq for CpuId {
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 impl CpuId {
-    /// Creates a new `CpuId` structure that can contain at most `array_len` KVM CPUID entries.
+    /// Creates a new `CpuId` structure that contains at most `array_len` KVM CPUID entries.
     ///
     /// # Arguments
     ///
@@ -120,7 +121,6 @@ impl CpuId {
     /// # Example
     ///
     /// ```
-    /// #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     /// use kvm_ioctls::CpuId;
     /// let cpu_id = CpuId::new(32);
     /// ```
@@ -134,7 +134,63 @@ impl CpuId {
         }
     }
 
-    /// Get the mutable entries slice so they can be modified before passing to the VCPU.
+    /// Creates a new `CpuId` structure based on a supplied vector of `kvm_cpuid_entry2`.
+    ///
+    /// # Arguments
+    ///
+    /// * `entries` - The vector of `kvm_cpuid_entry2` entries.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # extern crate kvm_ioctls;
+    /// extern crate kvm_bindings;
+    ///
+    /// use kvm_bindings::kvm_cpuid_entry2;
+    /// use kvm_ioctls::CpuId;
+    /// // Create a Cpuid to hold one entry.
+    /// let mut cpuid = CpuId::new(1);
+    /// let mut entries = cpuid.mut_entries_slice().to_vec();
+    /// let new_entry = kvm_cpuid_entry2 {
+    ///     function: 0x4,
+    ///     index: 0,
+    ///     flags: 1,
+    ///     eax: 0b1100000,
+    ///     ebx: 0,
+    ///     ecx: 0,
+    ///     edx: 0,
+    ///     padding: [0, 0, 0],
+    /// };
+    /// entries.insert(0, new_entry);
+    /// cpuid = CpuId::from_entries(&entries);
+    /// ```
+    ///
+    pub fn from_entries(entries: &[kvm_cpuid_entry2]) -> CpuId {
+        let mut kvm_cpuid = vec_with_array_field::<kvm_cpuid2, kvm_cpuid_entry2>(entries.len());
+        kvm_cpuid[0].nent = entries.len() as u32;
+
+        unsafe {
+            kvm_cpuid[0]
+                .entries
+                .as_mut_slice(entries.len())
+                .copy_from_slice(entries);
+        }
+
+        CpuId {
+            kvm_cpuid,
+            allocated_len: entries.len(),
+        }
+    }
+
+    /// Returns the mutable entries slice so they can be modified before passing to the VCPU.
+    ///
+    /// # Example
+    /// ```rust
+    /// use kvm_ioctls::{CpuId, Kvm, MAX_KVM_CPUID_ENTRIES};
+    /// let kvm = Kvm::new().unwrap();
+    /// let mut cpuid = kvm.get_supported_cpuid(MAX_KVM_CPUID_ENTRIES).unwrap();
+    /// let cpuid_entries = cpuid.mut_entries_slice();
+    /// ```
     ///
     pub fn mut_entries_slice(&mut self) -> &mut [kvm_cpuid_entry2] {
         // Mapping the unsized array to a slice is unsafe because the length isn't known.  Using
@@ -160,7 +216,7 @@ impl CpuId {
 }
 */
 
-/// A safe wrapper over the `kvm_run` struct.
+/// Safe wrapper over the `kvm_run` struct.
 ///
 /// The wrapper is needed for sending the pointer to `kvm_run` between
 /// threads as raw pointers do not implement `Send` and `Sync`.
@@ -213,5 +269,38 @@ impl KvmRunWrapper {
         unsafe {
             &mut *(self.kvm_run_ptr as *mut kvm_run)
         }
+    }
+}
+
+#[cfg(test)]
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cpuid_from_entries() {
+        let num_entries = 4;
+        let mut cpuid = CpuId::new(num_entries);
+
+        // add entry
+        let mut entries = cpuid.mut_entries_slice().to_vec();
+        let new_entry = kvm_cpuid_entry2 {
+            function: 0x4,
+            index: 0,
+            flags: 1,
+            eax: 0b1100000,
+            ebx: 0,
+            ecx: 0,
+            edx: 0,
+            padding: [0, 0, 0],
+        };
+        entries.insert(0, new_entry);
+        cpuid = CpuId::from_entries(&entries);
+
+        // check that the cpuid contains the new entry
+        assert_eq!(cpuid.allocated_len, num_entries + 1);
+        assert_eq!(cpuid.kvm_cpuid[0].nent, (num_entries + 1) as u32);
+        assert_eq!(cpuid.mut_entries_slice().len(), num_entries + 1);
+        assert_eq!(cpuid.mut_entries_slice()[0], new_entry);
     }
 }

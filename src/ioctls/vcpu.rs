@@ -1,5 +1,5 @@
 // Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 //
 // Portions Copyright 2017 The Chromium OS Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
@@ -96,7 +96,7 @@ pub enum VcpuExit<'a> {
 }
 */
 
-/// A wrapper around creating and using a kvm related vCPU file descriptor.
+/// Wrapper over KVM vCPU ioctls.
 pub struct VcpuFd {
     vcpu: File,
     kvm_run_ptr: KvmRunWrapper,
@@ -107,6 +107,22 @@ impl Vcpu for VcpuFd {
     type RunContextType = kvm_bindings::kvm_run;
 
     /// Gets the vCPU registers using the `KVM_GET_REGS` ioctl.
+    ///
+    /// The registers are returned in a `kvm_regs` structure as defined in the
+    /// [KVM API documentation](https://www.kernel.org/doc/Documentation/virtual/kvm/api.txt).
+    /// See documentation for `KVM_GET_REGS`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # extern crate kvm_ioctls;
+    /// # use kvm_ioctls::{Kvm, VmFd, VcpuFd};
+    /// let kvm = Kvm::new().unwrap();
+    /// let vm = kvm.create_vm().unwrap();
+    /// let vcpu = vm.create_vcpu(0).unwrap();
+    /// #[cfg(not(any(target_arch = "arm", target_arch = "aarch64")))]
+    /// let regs = vcpu.get_regs().unwrap();
+    /// ```
     ///
     #[cfg(not(any(target_arch = "arm", target_arch = "aarch64")))]
     fn get_regs(&self) -> Result<kvm_regs> {
@@ -120,11 +136,30 @@ impl Vcpu for VcpuFd {
         Ok(regs)
     }
 
-    /// Sets the vCPU registers using `KVM_SET_REGS` ioctl.
+    /// Sets the vCPU general purpose registers using the `KVM_SET_REGS` ioctl.
     ///
     /// # Arguments
     ///
-    /// * `regs` - Registers being set.
+    /// * `regs` - general purpose registers. For details check the `kvm_regs` structure in the
+    ///             [KVM API doc](https://www.kernel.org/doc/Documentation/virtual/kvm/api.txt).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # extern crate kvm_ioctls;
+    /// # use kvm_ioctls::{Kvm, VmFd, VcpuFd};
+    /// let kvm = Kvm::new().unwrap();
+    /// let vm = kvm.create_vm().unwrap();
+    /// let vcpu = vm.create_vcpu(0).unwrap();
+    ///
+    /// #[cfg(not(any(target_arch = "arm", target_arch = "aarch64")))] {
+    ///     // Get the current vCPU registers.
+    ///     let mut regs = vcpu.get_regs().unwrap();
+    ///     // Set a new value for the Instruction Pointer.
+    ///     regs.rip = 0x100;
+    ///     vcpu.set_regs(&regs).unwrap();
+    /// }
+    /// ```
     ///
     #[cfg(not(any(target_arch = "arm", target_arch = "aarch64")))]
     fn set_regs(&self, regs: &kvm_regs) -> Result<()> {
@@ -137,7 +172,23 @@ impl Vcpu for VcpuFd {
         Ok(())
     }
 
-    /// Gets the vCPU special registers using `KVM_GET_SREGS` ioctl.
+    /// Returns the vCPU special registers.
+    ///
+    /// The registers are returned in a `kvm_sregs` structure as defined in the
+    /// [KVM API documentation](https://www.kernel.org/doc/Documentation/virtual/kvm/api.txt).
+    /// See documentation for `KVM_GET_SREGS`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # extern crate kvm_ioctls;
+    /// # use kvm_ioctls::{Kvm, VmFd, VcpuFd};
+    /// let kvm = Kvm::new().unwrap();
+    /// let vm = kvm.create_vm().unwrap();
+    /// let vcpu = vm.create_vcpu(0).unwrap();
+    /// #[cfg(not(any(target_arch = "arm", target_arch = "aarch64")))]
+    /// let sregs = vcpu.get_sregs().unwrap();
+    /// ```
     ///
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     fn get_sregs(&self) -> Result<kvm_sregs> {
@@ -152,11 +203,29 @@ impl Vcpu for VcpuFd {
         Ok(regs)
     }
 
-    /// Sets the vCPU special registers using `KVM_SET_SREGS` ioctl.
+    /// Sets the vCPU special registers using the `KVM_SET_SREGS` ioctl.
     ///
     /// # Arguments
     ///
-    /// * `sregs` - Special registers to be set.
+    /// * `sregs` - Special registers. For details check the `kvm_sregs` structure in the
+    ///             [KVM API doc](https://www.kernel.org/doc/Documentation/virtual/kvm/api.txt).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # extern crate kvm_ioctls;
+    /// # use kvm_ioctls::{Kvm, VmFd, VcpuFd};
+    /// let kvm = Kvm::new().unwrap();
+    /// let vm = kvm.create_vm().unwrap();
+    /// let vcpu = vm.create_vcpu(0).unwrap();
+    /// #[cfg(not(any(target_arch = "arm", target_arch = "aarch64")))] {
+    ///     let mut sregs = vcpu.get_sregs().unwrap();
+    ///     // Update the code segment (cs).
+    ///     sregs.cs.base = 0;
+    ///     sregs.cs.selector = 0;
+    ///     vcpu.set_sregs(&sregs).unwrap();
+    /// }
+    /// ```
     ///
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     fn set_sregs(&self, sregs: &kvm_sregs) -> Result<()> {
@@ -169,9 +238,23 @@ impl Vcpu for VcpuFd {
         Ok(())
     }
 
-    /// X86 specific call that gets the FPU-related structure.
+    /// Returns the floating point state (FPU) from the vCPU.
     ///
+    /// The state is returned in a `kvm_fpu` structure as defined in the
+    /// [KVM API doc](https://www.kernel.org/doc/Documentation/virtual/kvm/api.txt).
     /// See the documentation for `KVM_GET_FPU`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # extern crate kvm_ioctls;
+    /// # use kvm_ioctls::{Kvm, VmFd, VcpuFd};
+    /// let kvm = Kvm::new().unwrap();
+    /// let vm = kvm.create_vm().unwrap();
+    /// let vcpu = vm.create_vcpu(0).unwrap();
+    /// #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    /// let fpu = vcpu.get_fpu().unwrap();
+    /// ```
     ///
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     fn get_fpu(&self) -> Result<kvm_fpu> {
@@ -187,13 +270,32 @@ impl Vcpu for VcpuFd {
         Ok(fpu)
     }
 
-    /// X86 specific call to setup the FPU.
-    ///
-    /// See the documentation for `KVM_SET_FPU`.
+    /// Set the floating point state (FPU) of a vCPU using the `KVM_SET_FPU` ioct.
     ///
     /// # Arguments
     ///
-    /// * `fpu` - FPU configurations struct.
+    /// * `fpu` - FPU configuration. For details check the `kvm_fpu` structure in the
+    ///           [KVM API doc](https://www.kernel.org/doc/Documentation/virtual/kvm/api.txt).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # extern crate kvm_ioctls;
+    /// # extern crate kvm_bindings;
+    /// # use kvm_ioctls::{Kvm, VmFd, VcpuFd};
+    /// # use kvm_bindings::kvm_fpu;
+    /// let kvm = Kvm::new().unwrap();
+    /// let vm = kvm.create_vm().unwrap();
+    /// let vcpu = vm.create_vcpu(0).unwrap();
+    /// #[cfg(any(target_arch = "x86", target_arch = "x86_64"))] {
+    ///     let KVM_FPU_CWD: u16 = 0x37f;
+    ///     let fpu = kvm_fpu {
+    ///         fcw: KVM_FPU_CWD,
+    ///         ..Default::default()
+    ///     };
+    ///     vcpu.set_fpu(&fpu).unwrap();
+    /// }
+    /// ```
     ///
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     fn set_fpu(&self, fpu: &kvm_fpu) -> Result<()> {
@@ -215,10 +317,37 @@ impl Vcpu for VcpuFd {
     ///
     /// * `cpuid` - CPUID registers.
     ///
+    /// # Example
+    ///
+    ///  ```rust
+    /// # extern crate kvm_ioctls;
+    /// # extern crate kvm_bindings;
+    /// # use kvm_ioctls::{Kvm, VmFd, VcpuFd, MAX_KVM_CPUID_ENTRIES};
+    /// # use kvm_bindings::kvm_fpu;
+    /// let kvm = Kvm::new().unwrap();
+    /// let mut kvm_cpuid = kvm.get_supported_cpuid(MAX_KVM_CPUID_ENTRIES).unwrap();
+    /// let vm = kvm.create_vm().unwrap();
+    /// let vcpu = vm.create_vcpu(0).unwrap();
+    ///
+    /// // Update the CPUID entries to disable the EPB feature.
+    /// const ECX_EPB_SHIFT: u32 = 3;
+    /// {
+    ///     let entries = kvm_cpuid.mut_entries_slice();
+    ///     for entry in entries.iter_mut() {
+    ///         match entry.function {
+    ///             6 => entry.ecx &= !(1 << ECX_EPB_SHIFT),
+    ///             _ => (),
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// vcpu.set_cpuid2(&kvm_cpuid);
+    /// ```
+    ///
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     fn set_cpuid2(&self, cpuid: &CpuId) -> Result<()> {
         let ret = unsafe {
-            // Here we trust the kernel not to read past the end of the kvm_msrs struct.
+            // Here we trust the kernel not to read past the end of the kvm_cpuid2 struct.
             ioctl_with_ptr(self, KVM_SET_CPUID2(), cpuid.as_ptr())
         };
         if ret < 0 {
@@ -227,10 +356,24 @@ impl Vcpu for VcpuFd {
         Ok(())
     }
 
-    /// X86 specific call to get the state of the LAPIC (Local Advanced Programmable Interrupt
-    /// Controller).
+    /// Returns the state of the LAPIC (Local Advanced Programmable Interrupt Controller).
     ///
+    /// The state is returned in a `kvm_lapic_state` structure as defined in the
+    /// [KVM API doc](https://www.kernel.org/doc/Documentation/virtual/kvm/api.txt).
     /// See the documentation for `KVM_GET_LAPIC`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # extern crate kvm_ioctls;
+    /// # use kvm_ioctls::{Kvm, VmFd, VcpuFd};
+    /// let kvm = Kvm::new().unwrap();
+    /// let vm = kvm.create_vm().unwrap();
+    /// // For `get_lapic` to work, you first need to create a IRQ chip before creating the vCPU.
+    /// vm.create_irq_chip().unwrap();
+    /// let vcpu = vm.create_vcpu(0).unwrap();
+    /// let lapic = vcpu.get_lapic().unwrap();
+    /// ```
     ///
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     fn get_lapic(&self) -> Result<kvm_lapic_state> {
@@ -247,14 +390,38 @@ impl Vcpu for VcpuFd {
         Ok(klapic)
     }
 
-    /// X86 specific call to set the state of the LAPIC (Local Advanced Programmable Interrupt
-    /// Controller).
+    /// Sets the state of the LAPIC (Local Advanced Programmable Interrupt Controller).
     ///
     /// See the documentation for `KVM_SET_LAPIC`.
     ///
     /// # Arguments
     ///
-    /// * `klapic` - LAPIC state registers.
+    /// * `klapic` - LAPIC state. For details check the `kvm_lapic_state` structure in the
+    ///             [KVM API doc](https://www.kernel.org/doc/Documentation/virtual/kvm/api.txt).
+    /// # Example
+    ///
+    /// ```rust
+    /// # extern crate kvm_ioctls;
+    /// # use kvm_ioctls::{Kvm, VmFd, VcpuFd};
+    /// use std::io::Write;
+    ///
+    /// let kvm = Kvm::new().unwrap();
+    /// let vm = kvm.create_vm().unwrap();
+    /// // For `get_lapic` to work, you first need to create a IRQ chip before creating the vCPU.
+    /// vm.create_irq_chip().unwrap();
+    /// let vcpu = vm.create_vcpu(0).unwrap();
+    /// let mut lapic = vcpu.get_lapic().unwrap();
+    ///
+    /// // Write to APIC_ICR offset the value 2.
+    /// let apic_icr_offset = 0x300;
+    /// let write_value: &[u8] = &[2, 0, 0, 0];
+    /// let mut apic_icr_slice =
+    ///     unsafe { &mut *(&mut lapic.regs[apic_icr_offset..] as *mut [i8] as *mut [u8]) };
+    /// apic_icr_slice.write(write_value).unwrap();
+    ///
+    /// // Update the value of LAPIC.
+    ///vcpu.set_lapic(&lapic).unwrap();
+    /// ```
     ///
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     fn set_lapic(&self, klapic: &kvm_lapic_state) -> Result<()> {
@@ -268,14 +435,30 @@ impl Vcpu for VcpuFd {
         Ok(())
     }
 
-    /// X86 specific call to read model-specific registers for this vCPU.
+    /// Returns the model-specific registers (MSR) for this vCPU.
     ///
     /// It emulates `KVM_GET_MSRS` ioctl's behavior by returning the number of MSRs
     /// successfully read upon success or the last error number in case of failure.
+    /// The MSRs are returned in the `msr` method argument.
     ///
     /// # Arguments
     ///
-    /// * `msrs`  - MSRs to be read.
+    /// * `msrs`  - MSRs (input/output). For details check the `kvm_msrs` structure in the
+    ///             [KVM API doc](https://www.kernel.org/doc/Documentation/virtual/kvm/api.txt).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # extern crate kvm_ioctls;
+    /// # extern crate kvm_bindings;
+    /// # use kvm_ioctls::{Kvm, VmFd, VcpuFd};
+    /// # use kvm_bindings::kvm_msrs;
+    /// let kvm = Kvm::new().unwrap();
+    /// let vm = kvm.create_vm().unwrap();
+    /// let vcpu = vm.create_vcpu(0).unwrap();
+    /// let mut msrs = kvm_msrs::default();
+    /// vcpu.get_msrs(&mut msrs).unwrap();
+    /// ```
     ///
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     fn get_msrs(&self, msrs: &mut kvm_msrs) -> Result<(i32)> {
@@ -289,13 +472,45 @@ impl Vcpu for VcpuFd {
         Ok(ret)
     }
 
-    /// X86 specific call to setup the MSRS.
+    /// Setup the model-specific registers (MSR) for this vCPU.
     ///
     /// See the documentation for `KVM_SET_MSRS`.
     ///
     /// # Arguments
     ///
-    /// * `kvm_msrs` - MSRs to be written.
+    /// * `msrs` - MSRs. For details check the `kvm_msrs` structure in the
+    ///            [KVM API doc](https://www.kernel.org/doc/Documentation/virtual/kvm/api.txt).
+    /// # Example
+    ///
+    /// ```rust
+    /// # extern crate kvm_ioctls;
+    /// # extern crate kvm_bindings;
+    /// # use kvm_ioctls::{Kvm, VmFd, VcpuFd};
+    /// # use kvm_bindings::{kvm_msrs, kvm_msr_entry};
+    /// # use std::mem;
+    /// let kvm = Kvm::new().unwrap();
+    /// let vm = kvm.create_vm().unwrap();
+    /// let vcpu = vm.create_vcpu(0).unwrap();
+    /// let mut msrs = kvm_msrs::default();
+    /// vcpu.get_msrs(&mut msrs).unwrap();
+    ///
+    /// let msrs_entries = {
+    ///     kvm_msr_entry {
+    ///         index: 0x0000_0174,
+    ///         ..Default::default()
+    ///     }
+    /// };
+    ///
+    /// // Create a vector large enough to hold the MSR entry defined above in
+    /// // a `kvm_msrs`structure.
+    /// let msrs_vec: Vec<u8> =
+    ///     Vec::with_capacity(mem::size_of::<kvm_msrs>() + mem::size_of::<kvm_msr_entry>());
+    /// let mut msrs: &mut kvm_msrs = unsafe {
+    ///     &mut *(msrs_vec.as_ptr() as *mut kvm_msrs)
+    /// };
+    /// msrs.nmsrs = 1;
+    /// vcpu.set_msrs(msrs).unwrap();
+    /// ```
     ///
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     fn set_msrs(&self, msrs: &kvm_msrs) -> Result<()> {
@@ -314,11 +529,29 @@ impl Vcpu for VcpuFd {
     /// Sets the type of CPU to be exposed to the guest and optional features.
     ///
     /// This initializes an ARM vCPU to the specified type with the specified features
-    /// and resets the values of all of its registers to defaults.
+    /// and resets the values of all of its registers to defaults. See the documentation for
+    /// `KVM_ARM_VCPU_INIT`.
     ///
     /// # Arguments
     ///
     /// * `kvi` - information about preferred CPU target type and recommended features for it.
+    ///           For details check the `kvm_vcpu_init` structure in the
+    ///           [KVM API doc](https://www.kernel.org/doc/Documentation/virtual/kvm/api.txt).
+    ///
+    /// # Example
+    /// ```rust
+    /// # extern crate kvm_ioctls;
+    /// # extern crate kvm_bindings;
+    /// # use kvm_ioctls::{Kvm, VmFd, VcpuFd};
+    /// use kvm_bindings::kvm_vcpu_init;
+    /// let kvm = Kvm::new().unwrap();
+    /// let vm = kvm.create_vm().unwrap();
+    /// let vcpu = vm.create_vcpu(0).unwrap();
+    ///
+    /// let mut kvi = kvm_vcpu_init::default();
+    /// vm.get_preferred_target(&mut kvi).unwrap();
+    /// vcpu.vcpu_init(&kvi).unwrap();
+    /// ```
     ///
     #[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
     fn vcpu_init(&self, kvi: &kvm_vcpu_init) -> Result<()> {
@@ -359,7 +592,82 @@ impl Vcpu for VcpuFd {
 
     /// Triggers the running of the current virtual CPU returning an exit reason.
     ///
-    fn run(& self) -> Result<VcpuExit> {
+    /// See documentation for `KVM_RUN`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # extern crate kvm_ioctls;
+    /// # extern crate kvm_bindings;
+    /// # use std::io::Write;
+    /// # use std::ptr::null_mut;
+    /// # use std::slice;
+    /// # use kvm_ioctls::{Kvm, VmFd, VcpuFd, VcpuExit};
+    /// # use kvm_bindings::{kvm_userspace_memory_region, KVM_MEM_LOG_DIRTY_PAGES};
+    /// # let kvm = Kvm::new().unwrap();
+    /// # let vm = kvm.create_vm().unwrap();
+    /// // This is a dummy example for running on x86 based on https://lwn.net/Articles/658511/.
+    /// #[cfg(target_arch = "x86_64")] {
+    ///     let mem_size = 0x4000;
+    ///     let guest_addr: u64 = 0x1000;
+    ///     let load_addr: *mut u8 = unsafe {
+    ///         libc::mmap(
+    ///             null_mut(),
+    ///             mem_size,
+    ///             libc::PROT_READ | libc::PROT_WRITE,
+    ///             libc::MAP_ANONYMOUS | libc::MAP_SHARED | libc::MAP_NORESERVE,
+    ///             -1,
+    ///             0,
+    ///         ) as *mut u8
+    ///     };
+    ///
+    ///     let mem_region = kvm_userspace_memory_region {
+    ///         slot: 0,
+    ///         guest_phys_addr: guest_addr,
+    ///         memory_size: mem_size as u64,
+    ///         userspace_addr: load_addr as u64,
+    ///         flags: 0,
+    ///     };
+    ///     vm.set_user_memory_region(mem_region).unwrap();
+    ///
+    ///     // Dummy x86 code that just calls halt.
+    ///     let x86_code = [
+    ///             0xf4,             /* hlt */
+    ///     ];
+    ///
+    ///     // Write the code in the guest memory. This will generate a dirty page.
+    ///     unsafe {
+    ///         let mut slice = slice::from_raw_parts_mut(load_addr, mem_size);
+    ///         slice.write(&x86_code).unwrap();
+    ///     }
+    ///
+    ///     let vcpu_fd = vm.create_vcpu(0).unwrap();
+    ///
+    ///     let mut vcpu_sregs = vcpu_fd.get_sregs().unwrap();
+    ///     vcpu_sregs.cs.base = 0;
+    ///     vcpu_sregs.cs.selector = 0;
+    ///     vcpu_fd.set_sregs(&vcpu_sregs).unwrap();
+    ///
+    ///     let mut vcpu_regs = vcpu_fd.get_regs().unwrap();
+    ///     // Set the Instruction Pointer to the guest address where we loaded the code.
+    ///     vcpu_regs.rip = guest_addr;
+    ///     vcpu_regs.rax = 2;
+    ///     vcpu_regs.rbx = 3;
+    ///     vcpu_regs.rflags = 2;
+    ///     vcpu_fd.set_regs(&vcpu_regs).unwrap();
+    ///
+    ///     loop {
+    ///         match vcpu_fd.run().expect("run failed") {
+    ///             VcpuExit::Hlt => {
+    ///                 break;
+    ///             }
+    ///             exit_reason => panic!("unexpected exit reason: {:?}", exit_reason),
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    ///
+    pub fn run(&self) -> Result<VcpuExit> {
         // Safe because we know that our file is a vCPU fd and we verify the return result.
         let ret = unsafe { ioctl(self, KVM_RUN()) };
         if ret == 0 {
