@@ -15,6 +15,8 @@ use kvm_bindings::kvm_run;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use kvm_bindings::{kvm_cpuid2, kvm_cpuid_entry2};
 
+use vmm_vcpu::x86_64::{CpuId};
+
 /// Wrappers over KVM device ioctls.
 pub mod device;
 /// Wrappers over KVM system ioctls.
@@ -299,7 +301,7 @@ mod tests {
 
         // check that the cpuid contains the new entry
         assert_eq!(cpuid.allocated_len, num_entries + 1);
-        assert_eq!(cpuid.kvm_cpuid[0].nent, (num_entries + 1) as u32);
+        assert_eq!(cpuid.cpuid_vec[0].nent, (num_entries + 1) as u32);
         assert_eq!(cpuid.mut_entries_slice().len(), num_entries + 1);
         assert_eq!(cpuid.mut_entries_slice()[0], new_entry);
     }

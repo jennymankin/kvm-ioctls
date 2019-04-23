@@ -667,7 +667,7 @@ impl Vcpu for VcpuFd {
     /// }
     /// ```
     ///
-    pub fn run(&self) -> Result<VcpuExit> {
+    fn run(&self) -> Result<VcpuExit> {
         // Safe because we know that our file is a vCPU fd and we verify the return result.
         let ret = unsafe { ioctl(self, KVM_RUN()) };
         if ret == 0 {
